@@ -18,26 +18,48 @@ type RA struct {
 
 func main() {
     ras := handle_RAs("RAs.txt")
+    holiday_eves := handle_holidays("holidays.txt")
     start_date, end_date := handle_dates("dates.txt")
 
-    for _, ra := range ras {
-        fmt.Printf("Name: %s, Conflicts: ", ra.name)
-        for _, d := range ra.conflicts {
-            fmt.Print(d.Format("2006-Jan-02"), ", ")
-        }
-        fmt.Println()
-    }
+    fmt.Printf("Duration in days: %d\n", int(end_date.Sub(start_date).Hours() / 24))
+
+    total_points := 0
 
     for d := start_date; d.Before(end_date); d = d.Add(24 * time.Hour) {
         if d.Weekday() == time.Friday || d.Weekday() == time.Saturday {
-            fmt.Print(d.Format("2006-Jan-02"))
+            total_points += 3
+        } else if holiday_eves[d] {
+            total_points += 2
+        } else if d.Weekday() == time.Sunday {
+            total_points += 2
+        } else {
+            total_points += 1
         }
     }
+
+    fmt.Printf("Total points: %d\n", total_points)
+
+    conflictSet_primary := make(map[time.Time]string)
+    conflictSet_secondary := make(map[time.Time]string)
+    for _, ra := range ras {
+        fmt.Println("Processing RA", ra.name)
+        for _, d := range ra.conflicts {
+            if d.Before(start_date) || d.After(end_date) {
+                log.Fatal(fmt.Sprintf("Conflict for RA %s not between start and end date",
+                    ra.name))
+            } 
+            conflictSet_primary[d] = ""
+            conflictSet_secondary[d] = ""
+        }
+    }
+
+
+
 }
 
-func handle_RAs(ra_filename string) (ras []RA) {
+func handle_RAs(filename string) (ras []RA) {
     // Open the file
-    file, err := os.Open(ra_filename)
+    file, err := os.Open(filename)
     if err != nil {
         log.Fatal(err)
     }
@@ -71,9 +93,9 @@ func handle_RAs(ra_filename string) (ras []RA) {
     return ras
 }
 
-func handle_dates(dates_filename string) (start_date, end_date time.Time) {
+func handle_dates(filename string) (start_date, end_date time.Time) {
     // Open the file
-    file, err := os.Open(dates_filename)
+    file, err := os.Open(filename)
     if err != nil {
         log.Fatal(err)
     }
@@ -96,9 +118,36 @@ func handle_dates(dates_filename string) (start_date, end_date time.Time) {
 
     end_date = time_from_date(date[0]);
 
-    fmt.Printf("Duration in days: %f\n", end_date.Sub(start_date).Hours() / 24)
-
     return start_date, end_date
+}
+
+func handle_holidays(filename string) (holiday_eves map[time.Time]bool) {
+    // Open the file
+    file, err := os.Open(filename)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer file.Close()
+
+    reader := csv.NewReader(file)
+    reader.FieldsPerRecord = 1 // 1 date per line
+
+    data, err := reader.ReadAll()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    holiday_eves = make(map[time.Time]bool)
+
+    for _, row := range data {
+        t := time_from_date(row[0])
+        t.AddDate(0, 0, -1)
+
+        // Add complete RA object to return list
+        holiday_eves[t] = true
+    }
+
+    return holiday_eves
 }
 
 func time_from_date(date string) time.Time {
