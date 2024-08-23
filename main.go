@@ -33,56 +33,52 @@ func main() {
     fmt.Printf("Duration in days: %d\n", int(end_date.Sub(start_date).Hours() / 24))
 
     // Shifts divided by points so higher-value shifts are assigned first (prevent weird behavior)
-    weekends_primary := make(map[Shift]bool)
-    weekends_secondary := make(map[Shift]bool)
-    sundays_primary := make(map[Shift]bool)
-    sundays_secondary := make(map[Shift]bool)
-    weekdays_primary := make(map[Shift]bool)
-    weekdays_secondary := make(map[Shift]bool)
+    weekend_shifts := make(map[Shift]bool)
+    sunday_shifts := make(map[Shift]bool)
+    weekday_shifts := make(map[Shift]bool)
 
-    // Special containers for in case shifts are given extra points (not currently implemented)
-    specials_primary := make(map[Shift]bool)
-    specials_secondary := make(map[Shift]bool)
+    // Special container for shifts given extra value (not currently implemented)
+    special_shifts := make(map[Shift]bool)
 
-    // Containers for shifts that not everyone can perform (should be given priority)
-    conflicts_primary := make(map[Shift]bool)
-    conflicts_secondary := make(map[Shift]bool)
+    // Container for shifts that not everyone can perform (should be given priority)
+    conflict_shifts := make(map[Shift]bool)
 
     /* Sort each shift into category, tracking total points assigned */
     total_points := 0
 
     for _, ra := range ras {
-        fmt.Println("Processing RA", ra.name)
         for _, d := range ra.conflicts {
             if d.Before(start_date) || d.After(end_date) {
                 log.Fatal(fmt.Sprintf("RA %s: Conflict not between start and end date",
                     ra.name))
             } 
             shift := shift_from_date(d, holiday_eves)
-            conflicts_primary[shift] = true
-            conflicts_secondary[shift] = true
+
+            // Don't double-count conflict shifts
+            if conflict_shifts[shift] { continue }
+
+            conflict_shifts[shift] = true
             total_points += shift.score
         }
     }
 
     for d := start_date; d.Before(end_date); d = d.Add(24 * time.Hour) {
         shift := shift_from_date(d, holiday_eves)
-        if conflicts_primary[shift] { continue }
+
+        // Don't double-count conflict shifts
+        if conflict_shifts[shift] { continue }
+
         switch shift.score {
         case 3:
-            weekends_primary[shift] = true
-            weekends_secondary[shift] = true
+            weekend_shifts[shift] = true
         case 2:
-            sundays_primary[shift] = true
-            sundays_secondary[shift] = true
+            sunday_shifts[shift] = true
         case 1:
-            weekdays_primary[shift] = true
-            weekdays_secondary[shift] = true
+            weekday_shifts[shift] = true
         default:
             fmt.Print("Special shift detected: ")
             print_shift(shift)
-            specials_primary[shift] = true
-            specials_secondary[shift] = true
+            special_shifts[shift] = true
         }
         total_points += shift.score
     }
@@ -90,39 +86,29 @@ func main() {
     fmt.Printf("Total points: %d\n", total_points)
     fmt.Printf("Number of RAs: %d\n", len(ras))
 
-    target_points :=int(math.Ceil(float64(total_points) / float64(len(ras))))
+    target_points := int(math.Ceil(float64(total_points) / float64(len(ras))))
 
     fmt.Printf("Target per RA: %d\n", target_points)
-    fmt.Printf("Floatic: %f\n", float64(total_points) / float64(len(ras)))
+    fmt.Printf("Unrounded Target: %f\n", float64(total_points) / float64(len(ras)))
 
 
-    assign_primary_shifts(conflicts_primary, ras, target_points)
-    assign_secondary_shifts(conflicts_secondary, ras, target_points)
+    assign_primary_shifts(conflict_shifts, ras, target_points)
+    assign_primary_shifts(special_shifts, ras, target_points)
+    assign_primary_shifts(weekend_shifts, ras, target_points)
+    assign_primary_shifts(sunday_shifts, ras, target_points)
+    assign_primary_shifts(weekday_shifts, ras, target_points)
 
-    assign_primary_shifts(specials_primary, ras, target_points)
-    assign_secondary_shifts(specials_secondary, ras, target_points)
-
-    assign_primary_shifts(weekends_primary, ras, target_points)
-    assign_secondary_shifts(weekends_secondary, ras, target_points)
-
-    assign_primary_shifts(sundays_primary, ras, target_points)
-    assign_secondary_shifts(sundays_secondary, ras, target_points)
-
-    assign_primary_shifts(weekdays_primary, ras, target_points)
-    assign_secondary_shifts(weekdays_secondary, ras, target_points)
+    assign_secondary_shifts(conflict_shifts, ras, target_points)
+    assign_secondary_shifts(special_shifts, ras, target_points)
+    assign_secondary_shifts(weekend_shifts, ras, target_points)
+    assign_secondary_shifts(sunday_shifts, ras, target_points)
+    assign_secondary_shifts(weekday_shifts, ras, target_points)
 
     dump_ra_info(ras)
 }
 
 func assign_primary_shifts(shift_set map[Shift]bool, ras []RA, target_points int) {
-    fmt.Println("Assigning primary shifts")
-    
-    for shift, _ := range shift_set {
-        // Don't reassign/over-assign shifts!
-        /*if !unassigned {
-            continue
-        }*/
-
+    for shift := range shift_set {
         // To prevent infinite loops or slowdowns, method for not re-testing bad fits
         valid_ras := make([]int, 0, len(ras))
         for i := range ras {
@@ -146,8 +132,6 @@ func assign_primary_shifts(shift_set map[Shift]bool, ras []RA, target_points int
                 ras[valid_index].primaries[shift] = true
                 // Add point value of shift to ra's score
                 ras[valid_index].primary_score += shift.score
-                // Shift is now assigned
-                //shift_set[shift] = false
 
                 break
             }
@@ -156,14 +140,7 @@ func assign_primary_shifts(shift_set map[Shift]bool, ras []RA, target_points int
 }
 
 func assign_secondary_shifts(shift_set map[Shift]bool, ras []RA, target_points int) {
-    fmt.Println("Assigning secondary shifts")
-
-    for shift, _ := range shift_set {
-        // Don't reassign/over-assign shifts!
-        /*if !unassigned {
-            continue
-        }*/
-
+    for shift := range shift_set {
         // To prevent infinite loops or slowdowns, method for not re-testing bad fits
         valid_ras := make([]int, 0, len(ras))
         for i := range ras {
@@ -188,8 +165,6 @@ func assign_secondary_shifts(shift_set map[Shift]bool, ras []RA, target_points i
                 ras[valid_index].secondaries[shift] = true
                 // Add point value of shift to ra's score
                 ras[valid_index].secondary_score += shift.score
-                // Shift is now assigned
-                //shift_set[shift] = false
 
                 break
             }
