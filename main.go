@@ -16,17 +16,17 @@ import (
 )
 
 type RA struct {
-    name string
-    conflicts map[Shift]bool
-    primaries map[Shift]bool
-    secondaries map[Shift]bool
-    primary_score int
-    secondary_score int
+    Name string
+    Conflicts map[Shift]bool
+    Primaries map[Shift]bool
+    Secondaries map[Shift]bool
+    Primary_score int
+    Secondary_score int
 }
 
 type Shift struct {
-    date time.Time
-    score int
+    Date time.Time
+    Score int
 }
 
 var templates = template.Must(template.ParseFiles("templates/index.html"))
@@ -59,21 +59,21 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 
     holidayFile, _, err := r.FormFile("holidayFile")
     if err != nil {
-        fmt.Fprintf(w, "Error uploading holidays file: %v", err)
+        http.Error(w, fmt.Sprintf("Error uploading file: %v", err), http.StatusInternalServerError)
         return
     }
     defer holidayFile.Close()
 
     raFile, _, err := r.FormFile("raFile")
     if err != nil {
-        fmt.Fprintf(w, "Error uploading RAs file: %v", err)
+        http.Error(w, fmt.Sprintf("Error uploading file: %v", err), http.StatusInternalServerError)
         return
     }
     defer raFile.Close()
 
     datesFile, _, err := r.FormFile("datesFile")
     if err != nil {
-        fmt.Fprintf(w, "Error uploading dates file: %v", err)
+        http.Error(w, fmt.Sprintf("Error uploading file: %v", err), http.StatusInternalServerError)
         return
     }
     defer datesFile.Close()
@@ -135,9 +135,9 @@ func calculateHandler(w http.ResponseWriter, r *http.Request) {
     total_points := 0
 
     for _, ra := range ras {
-        for shift := range ra.conflicts {
-            if shift.date.Before(start_date) || shift.date.After(end_date) {
-                schedule = fmt.Sprintf("RA %s's conflict not between start and end date", ra.name)
+        for shift := range ra.Conflicts {
+            if shift.Date.Before(start_date) || shift.Date.After(end_date) {
+                schedule = fmt.Sprintf("RA %s's conflict not between start and end date", ra.Name)
                 templates.ExecuteTemplate(w, "index.html", schedule)
                 return
             } 
@@ -145,7 +145,7 @@ func calculateHandler(w http.ResponseWriter, r *http.Request) {
             if conflict_shifts[shift] { continue }
 
             conflict_shifts[shift] = true
-            total_points += shift.score
+            total_points += shift.Score
         }
     }
 
@@ -155,7 +155,7 @@ func calculateHandler(w http.ResponseWriter, r *http.Request) {
         // Don't double-count conflict shifts
         if conflict_shifts[shift] { continue }
 
-        switch shift.score {
+        switch shift.Score {
         case 3:
             weekend_shifts[shift] = true
         case 2:
@@ -165,7 +165,7 @@ func calculateHandler(w http.ResponseWriter, r *http.Request) {
         default:
             special_shifts[shift] = true
         }
-        total_points += shift.score
+        total_points += shift.Score
     }
 
     schedule += fmt.Sprintf("Total points: %d\n", total_points)
@@ -268,13 +268,13 @@ func remove_at_index(s []int, index int) []int {
 }
 
 func index_of_lowest_ra_primary_score(ras []RA, indices []int) int {
-    min := ras[indices[0]].primary_score
+    min := ras[indices[0]].Primary_score
     min_index := 0
 
     for i, index := range indices {
         if i != 0 {
-            if ras[index].primary_score < min {
-                min = ras[index].primary_score
+            if ras[index].Primary_score < min {
+                min = ras[index].Primary_score
                 min_index = i
             }
         }
@@ -284,13 +284,13 @@ func index_of_lowest_ra_primary_score(ras []RA, indices []int) int {
 
 func assign_primary_shift(shift Shift, ras []RA) (error) {
     slices.SortFunc(ras, func(a, b RA) int {
-        return a.primary_score - b.primary_score
+        return a.Primary_score - b.Primary_score
     })
 
     for i := range ras {
-        if !ras[i].conflicts[shift] {
-            ras[i].primaries[shift] = true
-            ras[i].primary_score += shift.score
+        if !ras[i].Conflicts[shift] {
+            ras[i].Primaries[shift] = true
+            ras[i].Primary_score += shift.Score
             return nil
         }
     }
@@ -299,13 +299,13 @@ func assign_primary_shift(shift Shift, ras []RA) (error) {
 
 func assign_secondary_shift(shift Shift, ras []RA) (error) {
     slices.SortFunc(ras, func(a, b RA) int {
-        return a.secondary_score - b.secondary_score
+        return a.Secondary_score - b.Secondary_score
     })
 
     for i := range ras {
-        if !ras[i].primaries[shift] && !ras[i].conflicts[shift] {
-            ras[i].secondaries[shift] = true
-            ras[i].secondary_score += shift.score
+        if !ras[i].Primaries[shift] && !ras[i].Conflicts[shift] {
+            ras[i].Secondaries[shift] = true
+            ras[i].Secondary_score += shift.Score
             return nil
         }
     }
@@ -332,21 +332,21 @@ func handle_RAs(filename string, holiday_eves map[time.Time]bool) (ras []RA, err
     for _, row := range data {
         // Generate new RA per row
         next_ra := RA{}
-        next_ra.name = row[0]
+        next_ra.Name = row[0]
         
         // Default initialization (will be useful later)
-        next_ra.primary_score = 0
-        next_ra.secondary_score = 0
-        next_ra.primaries = make(map[Shift]bool)
-        next_ra.secondaries = make(map[Shift]bool)
+        next_ra.Primary_score = 0
+        next_ra.Secondary_score = 0
+        next_ra.Primaries = make(map[Shift]bool)
+        next_ra.Secondaries = make(map[Shift]bool)
 
-        next_ra.conflicts = make(map[Shift]bool)
+        next_ra.Conflicts = make(map[Shift]bool)
         for _, col := range row[1:] {
             t, err := date_from_string(col)
             if err != nil {
                 return ras, err
             }
-            next_ra.conflicts[shift_from_date(t, holiday_eves)] = true
+            next_ra.Conflicts[shift_from_date(t, holiday_eves)] = true
         }
         // Add complete RA object to return list
         ras = append(ras, next_ra)
@@ -402,7 +402,7 @@ func handle_holidays(filename string) (holiday_eves map[time.Time]bool, err erro
 
     data, err := reader.ReadAll()
     if err != nil {
-        log.Fatal(err)
+        return make(map[time.Time]bool), err
     }
 
     holiday_eves = make(map[time.Time]bool)
@@ -463,29 +463,29 @@ func date_from_string(date string) (time.Time, error) {
 
 func shift_from_date(d time.Time, holiday_eves map[time.Time]bool) Shift {
     if d.Weekday() == time.Friday || d.Weekday() == time.Saturday {
-        return Shift{date: d, score: 3}
+        return Shift{Date: d, Score: 3}
     } else if holiday_eves[d] || d.Weekday() == time.Sunday {
-        return Shift{date: d, score: 2}
+        return Shift{Date: d, Score: 2}
     } else {
-        return Shift{date: d, score: 1}
+        return Shift{Date: d, Score: 1}
     }
 }
 
 func print_shift(shift Shift) (string) {
-    return fmt.Sprintf("%s, %d points\n", shift.date.Format("01/02/2006"), shift.score)
+    return fmt.Sprintf("%s, %d points\n", shift.Date.Format("01/02/2006"), shift.Score)
 }
 
 func dump_ra_info (ras []RA) (string) {
     ret := fmt.Sprintln()
     for _, ra := range ras {
-        ret += fmt.Sprintf("RA %s\n", ra.name)
-        ret += fmt.Sprintf("  primary points: %d\n", ra.primary_score)
-        for shift := range ra.primaries {
-            ret += fmt.Sprint(shift.date.Format("01/02/2006"), ", ")
+        ret += fmt.Sprintf("RA %s\n", ra.Name)
+        ret += fmt.Sprintf("  primary points: %d\n", ra.Primary_score)
+        for shift := range ra.Primaries {
+            ret += fmt.Sprint(shift.Date.Format("01/02/2006"), ", ")
         }
-        ret += fmt.Sprintf("\n  secondary points: %d\n", ra.secondary_score)
-        for shift := range ra.secondaries {
-            ret += fmt.Sprint(shift.date.Format("01/02/2006"), ", ")
+        ret += fmt.Sprintf("\n  secondary points: %d\n", ra.Secondary_score)
+        for shift := range ra.Secondaries {
+            ret += fmt.Sprint(shift.Date.Format("01/02/2006"), ", ")
         }
         ret += fmt.Sprintln()
     }
