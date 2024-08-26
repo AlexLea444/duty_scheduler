@@ -32,12 +32,19 @@ type Shift struct {
 var templates = template.Must(template.ParseFiles("templates/index.html"))
 
 func main() {
+    // Get the port from the environment, with a fallback
+    port := os.Getenv("PORT")
+    if port == "" {
+        port = "8080" // Default to 8080 if no port is set
+    }
+
     http.HandleFunc("/", homeHandler)
     http.HandleFunc("/calculate", calculateHandler)
     http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
     http.Handle("/examples/", http.StripPrefix("/examples/", http.FileServer(http.Dir("examples"))))
-    log.Println("Server started on :8080")
-    log.Fatal(http.ListenAndServe(":8080", nil))
+
+    log.Printf("Server started on :%s\n", port)
+    log.Fatal(http.ListenAndServe(":"+port, nil))
 
 }
 
