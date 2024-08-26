@@ -3,17 +3,21 @@ package main
 import (
 	"encoding/csv"
 	"fmt"
+    "html/template"
 	"log"
-	"math/rand"
+    "net/http"
+    "slices"
+	"math"
 	"os"
+    "mime/multipart"
+    "io"
 	"strings"
 	"time"
-    "math"
 )
 
 type RA struct {
     name string
-    conflicts []time.Time
+    conflicts map[Shift]bool
     primaries map[Shift]bool
     secondaries map[Shift]bool
     primary_score int
@@ -25,12 +29,89 @@ type Shift struct {
     score int
 }
 
-func main() {
-    ras := handle_RAs("RAs.txt")
-    holiday_eves := handle_holidays("holidays.txt")
-    start_date, end_date := handle_dates("dates.txt")
+var templates = template.Must(template.ParseFiles("templates/index.html"))
 
-    fmt.Printf("Duration in days: %d\n", int(end_date.Sub(start_date).Hours() / 24))
+func main() {
+    http.HandleFunc("/", homeHandler)
+    http.HandleFunc("/calculate", calculateHandler)
+    http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+    http.Handle("/examples/", http.StripPrefix("/examples/", http.FileServer(http.Dir("examples"))))
+    log.Println("Server started on :8080")
+    log.Fatal(http.ListenAndServe(":8080", nil))
+
+}
+
+func homeHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        templates.ExecuteTemplate(w, "index.html", nil)
+        return
+    }
+
+    // Handle file uploads
+    r.ParseMultipartForm(10 << 20) // 10MB max size
+
+    holidayFile, _, err := r.FormFile("holidayFile")
+    if err != nil {
+        fmt.Fprintf(w, "Error uploading holidays file: %v", err)
+        return
+    }
+    defer holidayFile.Close()
+
+    raFile, _, err := r.FormFile("raFile")
+    if err != nil {
+        fmt.Fprintf(w, "Error uploading RAs file: %v", err)
+        return
+    }
+    defer raFile.Close()
+
+    datesFile, _, err := r.FormFile("datesFile")
+    if err != nil {
+        fmt.Fprintf(w, "Error uploading dates file: %v", err)
+        return
+    }
+    defer datesFile.Close()
+
+    saveUploadedFile(holidayFile, "holidays.txt")
+    saveUploadedFile(raFile, "RAs.txt")
+    saveUploadedFile(datesFile, "dates.txt")
+
+    // Redirect to calculation handler
+    http.Redirect(w, r, "/calculate", http.StatusSeeOther)
+}
+
+func saveUploadedFile(file multipart.File, filename string) error {
+    outFile, err := os.Create(filename)
+    if err != nil {
+        return err
+    }
+    defer outFile.Close()
+
+    _, err = io.Copy(outFile, file)
+    if err != nil {
+        return err
+    }
+
+    return nil
+}
+
+func calculateHandler(w http.ResponseWriter, r *http.Request) {
+    holiday_eves, err := handle_holidays("holidays.txt")
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+    ras, err := handle_RAs("RAs.txt", holiday_eves)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+    start_date, end_date, err := handle_dates("dates.txt")
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+
+    schedule := fmt.Sprintf("Duration in days: %d\n", int(end_date.Sub(start_date).Hours() / 24))
 
     // Shifts divided by points so higher-value shifts are assigned first (prevent weird behavior)
     weekend_shifts := make(map[Shift]bool)
@@ -47,13 +128,12 @@ func main() {
     total_points := 0
 
     for _, ra := range ras {
-        for _, d := range ra.conflicts {
-            if d.Before(start_date) || d.After(end_date) {
-                log.Fatal(fmt.Sprintf("RA %s: Conflict not between start and end date",
-                    ra.name))
+        for shift := range ra.conflicts {
+            if shift.date.Before(start_date) || shift.date.After(end_date) {
+                schedule = fmt.Sprintf("RA %s's conflict not between start and end date", ra.name)
+                templates.ExecuteTemplate(w, "index.html", schedule)
+                return
             } 
-            shift := shift_from_date(d, holiday_eves)
-
             // Don't double-count conflict shifts
             if conflict_shifts[shift] { continue }
 
@@ -76,100 +156,103 @@ func main() {
         case 1:
             weekday_shifts[shift] = true
         default:
-            fmt.Print("Special shift detected: ")
-            print_shift(shift)
             special_shifts[shift] = true
         }
         total_points += shift.score
     }
 
-    fmt.Printf("Total points: %d\n", total_points)
-    fmt.Printf("Number of RAs: %d\n", len(ras))
+    schedule += fmt.Sprintf("Total points: %d\n", total_points)
+    schedule += fmt.Sprintf("Number of RAs: %d\n", len(ras))
 
     target_points := int(math.Ceil(float64(total_points) / float64(len(ras))))
 
-    fmt.Printf("Target per RA: %d\n", target_points)
-    fmt.Printf("Unrounded Target: %f\n", float64(total_points) / float64(len(ras)))
+    schedule += fmt.Sprintf("Target per RA: %d\n", target_points)
+    schedule += fmt.Sprintf("Unrounded Target: %f\n", float64(total_points) / float64(len(ras)))
 
 
-    assign_primary_shifts(conflict_shifts, ras, target_points)
-    assign_primary_shifts(special_shifts, ras, target_points)
-    assign_primary_shifts(weekend_shifts, ras, target_points)
-    assign_primary_shifts(sunday_shifts, ras, target_points)
-    assign_primary_shifts(weekday_shifts, ras, target_points)
+    err = assign_primary_shifts(conflict_shifts, ras)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+    err = assign_secondary_shifts(conflict_shifts, ras)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
 
-    assign_secondary_shifts(conflict_shifts, ras, target_points)
-    assign_secondary_shifts(special_shifts, ras, target_points)
-    assign_secondary_shifts(weekend_shifts, ras, target_points)
-    assign_secondary_shifts(sunday_shifts, ras, target_points)
-    assign_secondary_shifts(weekday_shifts, ras, target_points)
+    err = assign_primary_shifts(special_shifts, ras)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+    err = assign_secondary_shifts(special_shifts, ras)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
 
-    dump_ra_info(ras)
+    err = assign_primary_shifts(weekend_shifts, ras)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+    err = assign_secondary_shifts(weekend_shifts, ras)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+
+    err = assign_primary_shifts(sunday_shifts, ras)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+    err = assign_secondary_shifts(sunday_shifts, ras)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+
+    err = assign_primary_shifts(weekday_shifts, ras)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+    err = assign_secondary_shifts(weekday_shifts, ras)
+    if err != nil {
+        print_error(err, w)
+        return
+    }
+
+    schedule += dump_ra_info(ras)
+    templates.ExecuteTemplate(w, "index.html", schedule)
+    return
 }
 
-func assign_primary_shifts(shift_set map[Shift]bool, ras []RA, target_points int) {
-    for shift := range shift_set {
-        // To prevent infinite loops or slowdowns, method for not re-testing bad fits
-        valid_ras := make([]int, 0, len(ras))
-        for i := range ras {
-            valid_ras = append(valid_ras, i)
-        }
-
-        for true {
-            random_index := rand.Intn(len(valid_ras))
-            valid_index := valid_ras[random_index]
-
-            if ras[valid_index].primary_score + shift.score > target_points {
-                valid_ras = remove_at_index(valid_ras, random_index)
-                if len(valid_ras) == 0 {
-                    dump_ra_info(ras)
-                    fmt.Println("Failing shift:")
-                    print_shift(shift)
-                    log.Fatal("Primary shifts not able to be assigned properly")
-                }
-            } else {
-                // Add shift to ra's list of primaries
-                ras[valid_index].primaries[shift] = true
-                // Add point value of shift to ra's score
-                ras[valid_index].primary_score += shift.score
-
-                break
-            }
-        }
-    }
+func print_error(err error, w http.ResponseWriter) {
+    schedule := fmt.Sprintf("Error: %v", err)
+    templates.ExecuteTemplate(w, "index.html", schedule)
 }
 
-func assign_secondary_shifts(shift_set map[Shift]bool, ras []RA, target_points int) {
+func assign_primary_shifts(shift_set map[Shift]bool, ras []RA) (error) {
     for shift := range shift_set {
-        // To prevent infinite loops or slowdowns, method for not re-testing bad fits
-        valid_ras := make([]int, 0, len(ras))
-        for i := range ras {
-            valid_ras = append(valid_ras, i)
-        }
-
-        for true {
-            random_index := rand.Intn(len(valid_ras))
-            valid_index := valid_ras[random_index]
-
-            if ras[valid_index].secondary_score + shift.score > target_points ||
-            ras[valid_index].primaries[shift] {
-                valid_ras = remove_at_index(valid_ras, random_index)
-                if len(valid_ras) == 0 {
-                    dump_ra_info(ras)
-                    fmt.Println("Failing shift:")
-                    print_shift(shift)
-                    log.Fatal("Secondary shifts not able to be assigned properly")
-                }
-            } else {
-                // Add shift to ra's list of secondaries
-                ras[valid_index].secondaries[shift] = true
-                // Add point value of shift to ra's score
-                ras[valid_index].secondary_score += shift.score
-
-                break
-            }
+        err := assign_primary_shift(shift, ras)
+        if err != nil {
+            return fmt.Errorf("Error assigning primary shifts, check formatting or reduce number of conflicts.\nFailing Shift: %s", print_shift(shift))
         }
     }
+    return nil
+}
+
+func assign_secondary_shifts(shift_set map[Shift]bool, ras []RA) (error) {
+    for shift := range shift_set {
+        err := assign_secondary_shift(shift, ras)
+        if err != nil {
+            return fmt.Errorf("Error assigning secondary shifts, check formatting or reduce number of conflicts.\nFailing Shift: %s", print_shift(shift))
+        }
+    }
+    return nil
 }
 
 func remove_at_index(s []int, index int) []int {
@@ -177,11 +260,56 @@ func remove_at_index(s []int, index int) []int {
     return s[:len(s)-1]
 }
 
-func handle_RAs(filename string) (ras []RA) {
+func index_of_lowest_ra_primary_score(ras []RA, indices []int) int {
+    min := ras[indices[0]].primary_score
+    min_index := 0
+
+    for i, index := range indices {
+        if i != 0 {
+            if ras[index].primary_score < min {
+                min = ras[index].primary_score
+                min_index = i
+            }
+        }
+    }
+    return min_index
+}
+
+func assign_primary_shift(shift Shift, ras []RA) (error) {
+    slices.SortFunc(ras, func(a, b RA) int {
+        return a.primary_score - b.primary_score
+    })
+
+    for i := range ras {
+        if !ras[i].conflicts[shift] {
+            ras[i].primaries[shift] = true
+            ras[i].primary_score += shift.score
+            return nil
+        }
+    }
+    return fmt.Errorf("Primary shift cannot be assigned to any RA")
+}
+
+func assign_secondary_shift(shift Shift, ras []RA) (error) {
+    slices.SortFunc(ras, func(a, b RA) int {
+        return a.secondary_score - b.secondary_score
+    })
+
+    for i := range ras {
+        if !ras[i].primaries[shift] && !ras[i].conflicts[shift] {
+            ras[i].secondaries[shift] = true
+            ras[i].secondary_score += shift.score
+            return nil
+        }
+    }
+    return fmt.Errorf("Primary shift cannot be assigned to any RA")
+}
+
+func handle_RAs(filename string, holiday_eves map[time.Time]bool) (ras []RA, err error) {
     // Open the file
     file, err := os.Open(filename)
     if err != nil {
-        log.Fatal(err)
+        return ras, err
     }
     defer file.Close()
 
@@ -191,7 +319,7 @@ func handle_RAs(filename string) (ras []RA) {
 
     data, err := reader.ReadAll()
     if err != nil {
-        log.Fatal(err)
+        return ras, err
     }
 
     for _, row := range data {
@@ -205,21 +333,26 @@ func handle_RAs(filename string) (ras []RA) {
         next_ra.primaries = make(map[Shift]bool)
         next_ra.secondaries = make(map[Shift]bool)
 
+        next_ra.conflicts = make(map[Shift]bool)
         for _, col := range row[1:] {
-            next_ra.conflicts = append(next_ra.conflicts, time_from_date(col))
+            t, err := date_from_string(col)
+            if err != nil {
+                return ras, err
+            }
+            next_ra.conflicts[shift_from_date(t, holiday_eves)] = true
         }
         // Add complete RA object to return list
         ras = append(ras, next_ra)
     }
 
-    return ras
+    return ras, nil
 }
 
-func handle_dates(filename string) (start_date, end_date time.Time) {
+func handle_dates(filename string) (start_date, end_date time.Time, err error) {
     // Open the file
     file, err := os.Open(filename)
     if err != nil {
-        log.Fatal(err)
+        return time.Time{}, time.Time{}, err
     }
     defer file.Close()
 
@@ -228,26 +361,32 @@ func handle_dates(filename string) (start_date, end_date time.Time) {
 
     date, err := reader.Read()
     if err != nil {
-        log.Fatal(err)
+        return time.Time{}, time.Time{}, err
     }
 
-    start_date = time_from_date(date[0]);
+    start_date, err = date_from_string(date[0]);
+    if err != nil {
+        return time.Time{}, time.Time{}, err
+    }
 
     date, err = reader.Read()
     if err != nil {
-        log.Fatal(err)
+        return start_date, time.Time{}, err
     }
 
-    end_date = time_from_date(date[0]);
+    end_date, err = date_from_string(date[0]);
+    if err != nil {
+        return start_date, time.Time{}, err
+    }
 
-    return start_date, end_date
+    return start_date, end_date, nil
 }
 
-func handle_holidays(filename string) (holiday_eves map[time.Time]bool) {
+func handle_holidays(filename string) (holiday_eves map[time.Time]bool, err error) {
     // Open the file
     file, err := os.Open(filename)
     if err != nil {
-        log.Fatal(err)
+        return make(map[time.Time]bool), err
     }
     defer file.Close()
 
@@ -262,17 +401,20 @@ func handle_holidays(filename string) (holiday_eves map[time.Time]bool) {
     holiday_eves = make(map[time.Time]bool)
 
     for _, row := range data {
-        t := time_from_date(row[0])
+        t, err := date_from_string(row[0])
+        if err != nil {
+            return make(map[time.Time]bool), err
+        }
         t.AddDate(0, 0, -1)
 
         // Add complete RA object to return list
         holiday_eves[t] = true
     }
 
-    return holiday_eves
+    return holiday_eves, nil
 }
 
-func time_from_date(date string) time.Time {
+func date_from_string(date string) (time.Time, error) {
     // Split the date string into parts
     parts := strings.Split(date, "/")
 
@@ -295,21 +437,21 @@ func time_from_date(date string) time.Time {
             }
             dateFormat = "01/02/2006"
         default:
-            log.Fatal("date not well-formatted! should be MM/DD or MM/DD/YYYY")
+            return time.Time{}, fmt.Errorf("date not well-formatted! should be MM/DD or MM/DD/YYYY")
     }
 
     date = strings.Join(parts, "/")
     t, err := time.Parse(dateFormat, date)
 
     if err != nil {
-        log.Fatal(err)
+        return t, err
     }
 
     if t.Year() == 0 {
         t = t.AddDate(time.Now().Year(), 0, 0)
     }
 
-    return t
+    return t, nil
 }
 
 func shift_from_date(d time.Time, holiday_eves map[time.Time]bool) Shift {
@@ -322,22 +464,23 @@ func shift_from_date(d time.Time, holiday_eves map[time.Time]bool) Shift {
     }
 }
 
-func print_shift(shift Shift) {
-    fmt.Print(shift.date.Format("01/02/2006"))
-    fmt.Printf(", %d points\n", shift.score)
+func print_shift(shift Shift) (string) {
+    return fmt.Sprintf("%s, %d points\n", shift.date.Format("01/02/2006"), shift.score)
 }
 
-func dump_ra_info (ras []RA) {
+func dump_ra_info (ras []RA) (string) {
+    ret := fmt.Sprintln()
     for _, ra := range ras {
-        fmt.Printf("RA %s\n", ra.name)
-        fmt.Printf("  primary points: %d\n", ra.primary_score)
+        ret += fmt.Sprintf("RA %s\n", ra.name)
+        ret += fmt.Sprintf("  primary points: %d\n", ra.primary_score)
         for shift := range ra.primaries {
-            fmt.Print(shift.date.Format("01/02/2006"), ", ")
+            ret += fmt.Sprint(shift.date.Format("01/02/2006"), ", ")
         }
-        fmt.Printf("\n  secondary points: %d\n", ra.secondary_score)
+        ret += fmt.Sprintf("\n  secondary points: %d\n", ra.secondary_score)
         for shift := range ra.secondaries {
-            fmt.Print(shift.date.Format("01/02/2006"), ", ")
+            ret += fmt.Sprint(shift.date.Format("01/02/2006"), ", ")
         }
-        fmt.Println()
+        ret += fmt.Sprintln()
     }
+    return ret
 }

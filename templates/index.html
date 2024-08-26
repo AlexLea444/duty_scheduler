@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>RA Schedule Calculator</title>
+        <link rel="stylesheet" href="/static/styles.css">
+    </head>
+    <body>
+        <h1>RA Schedule Calculator</h1>
+        <form action="/" method="post" enctype="multipart/form-data">
+            <label for="holidayFile">Holidays File:</label>
+            <input type="file" name="holidayFile" id="holidayFile" required><br>
+            <p>Each line should have the date of a holiday between the start and end date.</p>
+            <a href="/examples/example_holidays.txt" download>Download Example Holidays File</a><br><br>
+            
+            <label for="raFile">RAs File:</label>
+            <input type="file" name="raFile" id="raFile" required><br>
+            <p>Each line should have the name of an RA and a list of all dates when they are unavailable.</p>
+            <a href="/examples/example_RAs.txt" download>Download Example RAs File</a><br><br>
+            
+            <label for="datesFile">Start/End Date File:</label>
+            <input type="file" name="datesFile" id="datesFile" required><br>
+            <p>Line 1 should contain the first day to schedule, line 2 should contain the last.</p>
+            <a href="/examples/example_dates.txt" download>Download Example Dates File</a><br><br>
+            
+            <input type="submit" value="Calculate">
+        </form>
+
+        <h2>Schedule Output</h2>
+        <div id="scheduleOutput">
+            {{if .}}
+                <pre>{{.}}</pre>
+            {{else}}
+                <p>No schedule calculated yet. Please upload files and calculate.</p>
+            {{end}}
+        </div>
+    </body>
+</html>
